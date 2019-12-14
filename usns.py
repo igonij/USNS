@@ -177,6 +177,17 @@ class Unet(nn.Module):
         
         return x
 
+def tv_loss(scores):
+    """
+    Total variation regularization function for smoothing the shape of
+    predicted region
+    scores: prediction scores (model output without logits)
+    
+    returns: loss
+    """
+    scores = torch.sigmoid(scores)
+    return torch.sum((scores[:, :, 1:, :] - scores[:, :, :-1, :])**2 +
+                     (scores[:, :, :, 1:] - scores[:, :, :, :-1])**2)
 
 def train(model, optimizer, dataloader, dataloader_val, epochs=1, print_every=1000):
     """
@@ -203,7 +214,6 @@ def train(model, optimizer, dataloader, dataloader_val, epochs=1, print_every=10
             loss.backward()
             optimizer.step()
             
-            loss_acc += loss
             if t % print_every == print_every - 1:
                 print(f'Iteration {t}, loss = {loss.item()}')
                 val_loss(model, dataloader_val)
@@ -230,9 +240,9 @@ def val_loss(model, dataloader, show=False):
         print(f'Validation loss = {loss.item()}')
         
         if show:
-            show_imgs([x[0, 0].cpu(),
-                       y[0, 0].cpu(),
-                       torch.sigmoid(scores[0, 0].cpu())])
+            show_imgs([x.cpu(),
+                       y.cpu(),
+                       torch.sigmoid(scores.cpu())])
 
 
 def eval_model(model, x, threshold=0.5):
@@ -254,9 +264,12 @@ def dice_coef(pred, y):
     pred = pred.astype(bool)
     y = y.astype(bool)
     
-    D = y * pred + (~y) * (~pred)
-    
-    return D.mean()
+    if y.any():
+        D = 2 * np.sum((y * pred).astype(float))
+        D = D / (np.sum(y.astype(float)) + np.sum(pred.astype(float)))
+        return D
+    else:
+        return float(~pred.any())
 
 
 def generate_submission(model, dataloader, filepath):
@@ -280,9 +293,11 @@ def generate_submission(model, dataloader, filepath):
 
 
 def show_imgs(imglist):
-    f, axarr = plt.subplots(1, len(imglist))
+    batch_size = imglist[0].shape[0]
+    f, axarr = plt.subplots(batch_size, len(imglist), figsize=(16, 4 * batch_size))
     with torch.no_grad():
-        for ii, data in enumerate(imglist):
-            axarr[ii].axis('off')
-            axarr[ii].imshow(data)
+        for nn in range(batch_size):
+            for ii, data in enumerate(imglist):
+                axarr[nn, ii].axis('off')
+                axarr[nn, ii].imshow(data[nn, 0])
     plt.show()
