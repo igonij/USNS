@@ -177,6 +177,7 @@ class Unet(nn.Module):
         
         return x
 
+
 def tv_loss(scores):
     """
     Total variation regularization function for smoothing the shape of
@@ -185,11 +186,21 @@ def tv_loss(scores):
     
     returns: loss
     """
-    scores = torch.sigmoid(scores)
-    return torch.sum((scores[:, :, 1:, :] - scores[:, :, :-1, :])**2 +
-                     (scores[:, :, :, 1:] - scores[:, :, :, :-1])**2)
+    # scores = torch.sigmoid(scores)
+    return (torch.sum((scores[:, :, 1:, :] - scores[:, :, :-1, :])**2) +
+            torch.sum((scores[:, :, :, 1:] - scores[:, :, :, :-1])**2))
 
-def train(model, optimizer, dataloader, dataloader_val, epochs=1, print_every=1000):
+
+def full_loss(scores, target, tv_weight):
+    loss = F.binary_cross_entropy_with_logits(scores,
+                                              target[:, :, 2:-2, 2:-2],
+                                              reduction='mean')
+    loss += tv_weight * tv_loss(scores)
+    
+    return loss
+
+
+def train(model, optimizer, dataloader, dataloader_val, epochs=1, print_every=1000, tv_weight=1e-2):
     """
     Train a model with optimizer using data provided by dataloader.
         model: PyTorch nn.Module
@@ -198,7 +209,11 @@ def train(model, optimizer, dataloader, dataloader_val, epochs=1, print_every=10
         epochs: number of epochs to train
         print_every: Print loss and check accuracy every print_every iterations
     """
-    
+    running_loss = 0
+    nn = 0
+    loss_history = []
+    val_loss_history = []
+    dice_history = []
     for ee in range(epochs):
         for t, (x, y) in enumerate(dataloader):
             model.train()
@@ -206,19 +221,24 @@ def train(model, optimizer, dataloader, dataloader_val, epochs=1, print_every=10
             y = y.to(device=device)
             
             scores = model(x)
-            loss = F.binary_cross_entropy_with_logits(scores,
-                                                      y[:, :, 2:-2, 2:-2],
-                                                      reduction='mean')
+            loss = full_loss(scores, y, tv_weight)
             
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             
+            running_loss += loss.item()
+            nn += 1
+            
             if t % print_every == print_every - 1:
-                print(f'Iteration {t}, loss = {loss.item()}')
-                val_loss(model, dataloader_val)
+                loss_history.append(running_loss / nn)
+                print(f'Iteration {t}, loss = {loss_history[-1]}')
+                vloss, dscore = val_loss(model, dataloader_val)
+                val_loss_history.append(vloss)
+                dice_history.append(dscore)
+                running_loss, nn = 0, 0
                 print()
-        print(f'After {ee+1} epochs: loss = {loss.item()}')
+        print(f'After {ee+1} epochs: loss = {running_loss / max(nn, 1e-6)}')
         val_loss(model, dataloader_val, show=True)
         print()
 
@@ -228,21 +248,31 @@ def val_loss(model, dataloader, show=False):
     Check accuracy of the model on validation dataset
     """
     model.eval()
+    nn = 0
+    loss = 0
+    dice = 0
     with torch.no_grad():
         for x, y in dataloader:
+            batch_size = y.shape[0]
             x = x.to(device=device)
             y = y.to(device=device)
             
             scores = model(x)
-            loss = F.binary_cross_entropy_with_logits(scores,
-                    y[:, :, 2:-2, 2:-2], reduction='mean')
+            loss += batch_size * F.binary_cross_entropy_with_logits(scores,
+                    y[:, :, 2:-2, 2:-2], reduction='mean').item()
+            dice += np.sum(dice_score(scores, y))
+            nn += batch_size
         
-        print(f'Validation loss = {loss.item()}')
+        loss = loss / nn
+        dice = dice / nn
+        print(f'Validation loss = {loss}')
+        print(f'Dice score = {dice}')
         
         if show:
             show_imgs([x.cpu(),
                        y.cpu(),
                        torch.sigmoid(scores.cpu())])
+    return loss, dice
 
 
 def eval_model(model, x, threshold=0.5):
@@ -272,6 +302,31 @@ def dice_coef(pred, y):
         return float(~pred.any())
 
 
+def dice_score(scores, y):
+    """
+    Calculate Dice score for validation
+    scores: torch minibatch of model predictions (model outputs without logits)
+    y: torch minibatch of grount truth mask
+    
+    returns numpy array of dice score for each minibatch
+    """
+    with torch.no_grad():
+        batch_size = scores.shape[0]
+        scores = torch.sigmoid(scores)
+        scores = F.pad(scores, (2, 2, 2, 2))
+        
+        scores = scores.cpu().numpy()
+        y = y.cpu().numpy()
+
+        scores = scores > 0.5
+        
+        dice = np.zeros(batch_size)
+        for nn in range(batch_size):
+            dice[nn] = dice_coef(scores[nn, 0, :, :], y[nn, 0, :, :])
+    
+    return dice
+
+
 def generate_submission(model, dataloader, filepath):
     with torch.no_grad():
         model.to(device=device)
@@ -294,7 +349,7 @@ def generate_submission(model, dataloader, filepath):
 
 def show_imgs(imglist):
     batch_size = imglist[0].shape[0]
-    f, axarr = plt.subplots(batch_size, len(imglist), figsize=(16, 4 * batch_size))
+    f, axarr = plt.subplots(batch_size, len(imglist), figsize=(16, 4 * batch_size), squeeze=False)
     with torch.no_grad():
         for nn in range(batch_size):
             for ii, data in enumerate(imglist):
