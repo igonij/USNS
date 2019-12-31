@@ -84,81 +84,178 @@ class USNSDataset(Dataset):
 
 ## Net definition
 
-class ConvBlockDn(nn.Module):
-    def __init__(self, in_channel, out_channel, pad=0):
+class ConvBlock(nn.Module):
+    def __init__(self, in_channel, out_channel, pad=0, bn=False):
         """
-        Convolution block of down pass in Unet
+        Convolutional block of U-net architecture without activation (it is
+        optimal to make ReLU after max pool)
         """
-        super(ConvBlockDn, self).__init__()
-        
+        super(ConvBlock, self).__init__()
+        self.bn = bn
         self.conv1 = nn.Conv2d(in_channel, out_channel,
                                (3, 3), padding=pad, bias=True)
         self.conv2 = nn.Conv2d(out_channel, out_channel,
                                (3, 3), padding=pad, bias=True)
+        
+        if self.bn:
+            self.bn1 = nn.BatchNorm2d(out_channel)
+            self.bn2 = nn.BatchNorm2d(out_channel)
     
     def forward(self, x):
         x = F.relu(self.conv1(x))
-        x = F.max_pool2d(self.conv2(x), (2, 2))
-        x = F.relu(x)
-
-        return x
-
-
-class ConvBlockUp(nn.Module):
-    def __init__(self, in_channel, out_channel, pad=0):
-        """
-        Convolution block of down pass in Unet
-        """
-        super(ConvBlockUp, self).__init__()
-
-        self.conv1 = nn.Conv2d(in_channel, out_channel,
-                               (3, 3), padding=pad, bias=True)
-        self.conv2 = nn.Conv2d(out_channel, out_channel,
-                               (3, 3), padding=pad, bias=True)
-        self.upconv = nn.ConvTranspose2d(out_channel, out_channel // 2,
-                                         (2, 2), stride=2, bias=True)
+        if self.bn: x = self.bn1(x)
+        x = self.conv2(x)
+        if self.bn: x = self.bn2(x)
         
+        return x
+
+
+class DnPool(nn.Module):
+    """
+    Down pass Max Pooling
+    """
+    def __init__(self):
+        super(DnPool, self).__init__()
+    
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = self.upconv(x)
+        x = F.relu(F.max_pool2d(x, (2, 2)))
 
         return x
+
+class UpPool(nn.Module):
+    """
+    Up convolution on the way up
+    Acceprs input x from previouse layer and concatenates output with
+    features f from down pass
+    """
+    def __init__(self, in_channel):
+        super(UpPool, self).__init__()
+        self.upconv = nn.ConvTranspose2d(in_channel, in_channel // 2,
+                                         (2, 2), stride=2, bias=True)
+    
+    def forward(self, x, f):
+        x = self.upconv(F.relu(x))
+        # do we need relu for x here?
+        out = F.relu(torch.cat([f, x], dim=1))
+
+        return out 
 
 
 class Unet(nn.Module):
-    def __init__(self, n_filters=64):
+    def __init__(self, n_filters=64, bn=False):
         """
         Unet CNN for Ultrasound Nerve Segmentation challenge
+            n_filters: (int) initial number of filters
+            bn: (bool)  yse of batch normalization
         """
-        super(Unet, self).__init__()
+        super().__init__()
 
         # down
-        self.dn_blk1 = ConvBlockDn(1, n_filters, pad=0)
-        self.dn_blk2 = ConvBlockDn(n_filters, 2*n_filters, pad=1)
-        self.dn_blk3 = ConvBlockDn(2*n_filters, 4*n_filters, pad=1)
-        self.dn_blk4 = ConvBlockDn(4*n_filters, 8*n_filters, pad=1)
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=0, bn=bn)
+        self.dnpool1 = DnPool()
+        self.dn_blk2 = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
+        self.dnpool2 = DnPool()
+        self.dn_blk3 = ConvBlock(2*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.dnpool3 = DnPool()
+        self.dn_blk4 = ConvBlock(4*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.dnpool4 = DnPool()
 
         # bottom
-        self.bottom_blk = ...
+        self.bottom_blk = ConvBlock(8*n_filters, 16*n_filters, pad=1, bn=bn)
 
         # up
-        self.up_blk1 = ConvBlockUp(8*n_filters, 4*n_filters)
-        self.up_blk2 = ConvBlockUp(4*n_filters, 2*n_filters)
-        self.up_blk3 = ConvBlockUp(2*n_filters, n_filters)
+        self.upconv1 = UpPool(16*n_filters)
+        self.up_blk1 = ConvBlock(16*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.upconv2 = UpPool(8*n_filters)
+        self.up_blk2 = ConvBlock(8*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.upconv3 = UpPool(4*n_filters)
+        self.up_blk3 = ConvBlock(4*n_filters, 2*n_filters, pad=1, bn=bn)
+        self.upconv4 = UpPool(2*n_filters)
+        self.up_blk4 = ConvBlock(2*n_filters, n_filters, pad=1, bn=bn)
+
+        self.outconv = nn.Conv2d(n_filters, 1, (1, 1), bias=True)
 
     def forward(self, x):
         # go down
-
+        out1 = self.dn_blk1(x)
+        out2 = self.dn_blk2(self.dnpool1(out1))
+        out3 = self.dn_blk3(self.dnpool2(out2))
+        out4 = self.dn_blk4(self.dnpool1(out3))
+        
         # bottom block
-
+        self.bottom_out = self.bottom_blk(self.dnpool4(out4))
+        
         # go up
+        x = self.up_blk1(self.upconv1(self.bottom_out, out4))
+        x = self.up_blk2(self.upconv2(x, out3))
+        x = self.up_blk3(self.upconv3(x, out2))
+        x = self.up_blk4(self.upconv4(x, out1))
 
         # out block
+        x = self.outconv(x)
+
+        return x
+
+
+class BinaryNet(nn.Module):
+    """
+    Binary classifier deciding if nerve present on image
+    """
+    def __init__(self, n_filters, bn=False):
+        super().__init__()
+        self.bn = bn
+
+        self.conv1 = nn.Conv2d(16*n_filters, 8*n_filters, kernel_size=(3, 3))
+        self.conv2 = nn.Conv2d(8*n_filters, 4*n_filters, kernel_size=(3, 3))
+        self.conv3 = nn.Conv2d(4*n_filters, 2*n_filters, kernel_size=(3, 3))
+        self.conv4 = nn.Conv2d(2*n_filters, n_filters, kernel_size=(3, 3))
+        self.conv1x1 = nn.Conv2d(n_filters, 1, kernel_size=(1, 1))
+        self.fc = nn.Linear(504, 1)
+
+        if self.bn:
+            self.bn1 = nn.BatchNorm2d(8*n_filters)
+            self.bn2 = nn.BatchNorm2d(4*n_filters)
+            self.bn3 = nn.BatchNorm2d(2*n_filters)
+            self.bn4 = nn.BatchNorm2d(n_filters)
+    
+    def forward(self, x):
+        x = self.conv1(F.relu(x))
+        if self.bn: x = self.bn1(x)
+
+        x = self.conv2(F.relu(x))
+        if self.bn: x = self.bn2(x)
+
+        x = self.conv3(F.relu(x))
+        if self.bn: x = self.bn3(x)
+        
+        x = self.conv4(F.relu(x))
+        if self.bn: x = self.bn4(x)
+
+        x = self.conv1x1(F.relu(x))
+        x = self.fc(F.relu(x.flatten(start_dim=1)))
+
+        return x
+
+
+class BinaryNetSimple(nn.Module):
+    """
+    Binary classifier deciding if nerve present on image
+    """
+    def __init__(self, n_filters):
+        super().__init__()
+        
+        self.conv1x1 = nn.Conv2d(16*n_filters, 1, kernel_size=(1, 1))
+        self.fc = nn.Linear(936, 1)
+
+    def forward(self, x):
+        x = F.relu(self.conv1x1(x))
+        x = self.fc(x.flatten(start_dim=1))
+
+        return x
 
 
 class USNSDetector:
-    def __init__(self, model:nn.Module, device=None):
+    def __init__(self, model, model_bin, device=None):
         """
         Ultrasound Nerve Segmentation detector class. Contains training and
         prediction procedures.
@@ -172,10 +269,21 @@ class USNSDetector:
             self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         
         self.model = model.to(self.device)
+        self.model_bin = model_bin.to(self.device)
 
-        self.threshold = 0.5
+        self.threshold = torch.tensor(0.5).to(self.device)
+        self.threshold.requires_grad_()
 
-    def fit(self, dataloader, dataloader_val, epochs=1, print_every=1000, **params):
+        self.n_samples = []
+        self.loss_history = []
+        self.val_loss_history = []
+        self.dice_history = []
+
+        self.n_samples_bin = []
+        self.loss_history_bin = []
+        self.val_loss_history_bin = []
+        
+    def fit(self, dataloader, dataloader_val, epochs=1, print_every=1000, lr=0.001):
         """
         Train model.
         Args:
@@ -185,16 +293,15 @@ class USNSDetector:
             dataloader_val: pytorch compatible DataLoader for validation
             epochs: number of epochs to train
             optimizer: pytorch compatible optimiser to train with
-            params: dict with training hyperparameters
             print_every: num of samples to be processed to check val score
+            params: dict with training hyperparameters
         """
-        optimizer = optim.Adam(self.model.parameters(), lr=params['lr'])
+        optimizer = optim.Adam(self.model.parameters(), lr=lr)
+        optimizer.add_param_group({'params': self.threshold})
         
         running_loss = 0
         num_images = 0
-        self.loss_history = []
-        self.val_loss_history = []
-        self.dice_history = []
+        num_images_previous = 0
         for ee in range(epochs):
             for x, y in dataloader:
                 self.model.train()
@@ -213,7 +320,10 @@ class USNSDetector:
                 num_images += batch_size
 
                 if num_images % print_every < batch_size:
-                    self.loss_history.append(running_loss / num_images)
+                    self.n_samples.append(num_images)
+                    self.loss_history.append(running_loss / (num_images - num_images_previous))
+                    running_loss = 0
+                    num_images_previous = num_images
                     print(f'{num_images} images processed, loss = {self.loss_history[-1]}')
                     
                     vloss, dscore = self.validate(dataloader_val, printing=True)
@@ -221,7 +331,7 @@ class USNSDetector:
                     self.dice_history.append(dscore)
                     print()
 
-            print(f'After {ee+1} epochs: loss = {running_loss / max(nn, 1e-6)}')
+            print(f'After {ee+1} epochs: loss = {running_loss / max(num_images, 1e-6)}')
             self.validate(dataloader_val, printing=True, show=True)
             print()
 
@@ -238,8 +348,14 @@ class USNSDetector:
                                                   target[:, :, 2:-2, 2:-2],
                                                   reduction='mean')
         return loss
+
+    def dice(self, scores, target):
+        scores = F.pad(scores, (2, 2, 2, 2)).sigmoid()
+        scores = F.relu(scores - self.threshold)
+        
+        
     
-    def validate(self, dataloader, printing=False, show=True):
+    def validate(self, dataloader, printing=False, show=False):
         """
         Scores model with loss and Dice score for data from dataloader
         Args:
@@ -252,7 +368,7 @@ class USNSDetector:
         """
         self.model.eval()
 
-        nn = 0
+        n_processed = 0
         loss = 0
         dice = 0
         with torch.no_grad():
@@ -261,9 +377,9 @@ class USNSDetector:
                 scores = self.model(x.to(self.device))
                 loss += batch_size * self.loss(scores, y.to(self.device))
                 dice += np.sum(self.score(scores, y))
-                nn += batch_size
-            loss = loss / nn
-            dice = dice / nn
+                n_processed += batch_size
+            loss = loss / n_processed
+            dice = dice / n_processed
 
             if printing:
                 print(f'Validation loss = {loss}')
@@ -304,6 +420,76 @@ class USNSDetector:
         
         return dice
     
+    def fit_binary(self, dataloader_train, dataloader_val,
+                        epochs=1, print_every=1000, lr=0.001):
+        
+        optimizer = optim.Adam(self.model_bin.parameters(), lr=lr)
+
+        running_loss = 0
+        num_images = 0
+        num_images_previous = 0
+        for ee in range(epochs):
+            for x, y in dataloader_train:
+                self.model.eval()
+                self.model_bin.train()
+                x = x.to(self.device)
+                y = y.to(self.device)
+                batch_size = x.shape[0]
+
+                scores = self.model(x)
+                x = self.model.bottom_out.detach()
+                scores = self.model_bin(x)
+                loss = self.loss_bin(scores, y)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                running_loss += batch_size * loss.item()
+                num_images += batch_size
+
+                if num_images % print_every < batch_size:
+                    self.n_samples_bin.append(num_images)
+                    self.loss_history_bin.append(running_loss / (num_images - num_images_previous))
+                    running_loss = 0
+                    num_images_previous = num_images
+                    print(f'{num_images} images processed, loss = {self.loss_history_bin[-1]}')
+                    
+                    vloss = self.validate_bin(dataloader_val, printing=True)
+                    self.val_loss_history_bin.append(vloss)
+                    print()
+
+            print(f'After {ee+1} epochs: loss = {running_loss / max(num_images - num_images_previous, 1e-6)}')
+            self.validate_bin(dataloader_val, printing=True)
+            print()
+    
+    def loss_bin(self, scores, target):
+        target = target.flatten(start_dim=1).bool().any(dim=1)
+        target = target.float()
+        loss = F.binary_cross_entropy_with_logits(scores.squeeze(), target)
+        return loss
+
+    def validate_bin(self, dataloader, printing=False):
+        self.model.eval()
+        self.model_bin.eval()
+
+        n_processed = 0
+        loss = 0
+        with torch.no_grad():
+            for x, y in dataloader:
+                batch_size = y.shape[0]
+                scores = self.model(x.to(self.device))
+                scores = self.model.bottom_out.detach()
+                scores = self.model_bin(scores)
+                loss += batch_size * self.loss_bin(scores, y.to(self.device)).item()
+                n_processed += batch_size
+            loss = loss / n_processed
+            
+            if printing:
+                print(f'Validation loss = {loss}')
+            
+        return loss
+    
     def generate_submission(self, dataloader, filepath):
         """
         Generate submission csv file for samples from dataloader
@@ -330,7 +516,7 @@ class USNSDetector:
         Evaluate model with input x.
         Returns predicted mask image
         """
-        model.eval()
+        self.model.eval()
         with torch.no_grad():
             scores = torch.sigmoid(self.model(x))
             scores = F.pad(scores, (2, 2, 2, 2))
@@ -357,13 +543,13 @@ def dice_coef(pred, targ):
 
 def show_imgs(*imgs):
     batch_size = imgs[0].shape[0]
-    f, axarr = plt.subplots(batch_size, len(imgs), figsize=(16, 4 * batch_size), squeeze=False)
+    _, axarr = plt.subplots(batch_size, len(imgs), figsize=(16, 4 * batch_size), squeeze=False)
     with torch.no_grad():
         for nn in range(batch_size):
             for ii, img in enumerate(imgs):
                 axarr[nn, ii].axis('off')
                 axarr[nn, ii].imshow(img[nn, 0])
-    f.show()
+    plt.show()
 
 
 # Run-length encoding function (https://www.kaggle.com/rakhlin/fast-run-length-encoding-python)
