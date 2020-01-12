@@ -219,7 +219,7 @@ class USNSDetector:
         
         loss = 1 - Dpos - Dneg
 
-        return loss
+        return loss.mean()
 
     def validate(self, dataloader, printing=False, show=False):
         """
