@@ -15,6 +15,8 @@ from torch import optim
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms as T
 
+import copy
+
 import numpy as np
 
 from PIL import Image
@@ -282,6 +284,12 @@ class USNSDetector:
         self.n_samples_bin = []
         self.loss_history_bin = []
         self.val_loss_history_bin = []
+
+        self.best_model_wts = copy.deepcopy(self.model.state_dict())
+        self.best_model_dice = 0.0
+
+        self.best_model_bin_wts = copy.deepcopy(self.model_bin.state_dict())
+        self.best_model_acc = 0.0
         
     def fit(self, dataloader, dataloader_val, epochs=1, print_every=1000, lr=0.001):
         """
