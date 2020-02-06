@@ -15,16 +15,15 @@ class ConvBlock(nn.Module):
                                (3, 3), padding=pad, bias=True)
         self.conv2 = nn.Conv2d(out_channel, out_channel,
                                (3, 3), padding=pad, bias=True)
-        self.relu = nn.ReLU()
-
+        
         if self.bn:
             self.bn1 = nn.BatchNorm2d(out_channel)
             self.bn2 = nn.BatchNorm2d(out_channel)
     
     def forward(self, x):
-        x = self.relu(self.conv1(x))
+        x = self.conv1(x)
         if self.bn: x = self.bn1(x)
-        x = self.conv2(x)
+        x = self.conv2(F.relu(x))
         if self.bn: x = self.bn2(x)
         
         return x
@@ -33,21 +32,20 @@ class ConvBlock(nn.Module):
 class UpPool(nn.Module):
     """
     Up convolution on the way up
-    Acceprs input x from previouse layer and concatenates output with
+    Accepts input x from previouse layer and concatenates output with
     features f from down pass
     """
     def __init__(self, in_channel):
         super().__init__()
         self.upconv = nn.ConvTranspose2d(in_channel, in_channel // 2,
                                          (2, 2), stride=2, bias=True)
-        self.relu = nn.ReLU()
     
     def forward(self, x, f):
-        x = self.upconv(self.relu(x))
+        x = self.upconv(F.relu(x))
         # do we need relu for x here?
-        out = self.relu(torch.cat([f, x], dim=1))
+        out = F.relu(torch.cat([f, x], dim=1))
 
-        return out 
+        return out
 
 
 class Unet(nn.Module):
@@ -55,15 +53,11 @@ class Unet(nn.Module):
         """
         Unet CNN for Ultrasound Nerve Segmentation challenge
             n_filters: (int) initial number of filters
-            bn: (bool)  yse of batch normalization
+            bn: (bool) if use of batch normalization
         """
         super().__init__()
-
-        self.relu = nn.ReLU()
-        self.maxpool = nn.MaxPool2d((2, 2))
-
         # down
-        self.dn_blk1 = ConvBlock(1, n_filters, pad=0, bn=bn)
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=1, bn=bn)
         self.dn_blk2 = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
         self.dn_blk3 = ConvBlock(2*n_filters, 4*n_filters, pad=1, bn=bn)
         self.dn_blk4 = ConvBlock(4*n_filters, 8*n_filters, pad=1, bn=bn)
@@ -84,7 +78,7 @@ class Unet(nn.Module):
         self.outconv = nn.Conv2d(n_filters, 2, (1, 1), bias=True)
 
     def dnpool(self, x):
-        return self.relu(self.maxpool(x))
+        return F.relu(F.max_pool2d(x, (2, 2)))
 
     def forward(self, x):
         # go down
@@ -103,7 +97,7 @@ class Unet(nn.Module):
         x = self.up_blk4(self.upconv4(x, out1))
 
         # out block
-        x = self.outconv(x)
+        x = self.outconv(F.relu(x))
 
         return x
 
@@ -111,15 +105,11 @@ class Unet(nn.Module):
 class Unet3(nn.Module):
     def __init__(self, n_filters=64, bn=False):
         super().__init__()
-
-        self.relu = nn.ReLU()
-        self.maxpool = nn.MaxPool2d((2, 2))
-
         # down
-        self.dn_blk1 = ConvBlock(1, n_filters, pad=0, bn=bn)
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=1, bn=bn)
         self.dn_blk2 = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
         self.dn_blk3 = ConvBlock(2*n_filters, 4*n_filters, pad=1, bn=bn)
-        
+
         # bottom
         self.bottom_blk = ConvBlock(4*n_filters, 8*n_filters, pad=1, bn=bn)
 
@@ -134,7 +124,7 @@ class Unet3(nn.Module):
         self.outconv = nn.Conv2d(n_filters, 2, (1, 1), bias=True)
 
     def dnpool(self, x):
-        return self.relu(self.maxpool(x))
+        return F.relu(F.max_pool2d(x, (2, 2)))
 
     def forward(self, x):
         # go down
@@ -151,10 +141,384 @@ class Unet3(nn.Module):
         x = self.up_blk3(self.upconv3(x, out1))
         
         # out block
-        x = self.outconv(x)
+        x = self.outconv(F.relu(x))
 
         return x
 
+
+class Unet1(nn.Module):
+    """
+    Unet CNN for Ultrasound Nerve Segmentation challenge
+    Depth 1.
+        n_filters: (int) initial number of filters
+        bn: (bool) if use of batch normalization
+    """
+    def __init__(self, n_filters, bn=False):
+        super().__init__()
+        # down
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=1, bn=bn)
+        # bottom
+        self.bottom = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
+        # up
+        self.upconv1 = UpPool(2*n_filters)
+        self.up_blk1 = ConvBlock(2*n_filters, n_filters, pad=1, bn=bn)
+        # output
+        self.outconv = nn.Conv2d(n_filters, 2, (1, 1), bias=True)
+    
+    def forward(self, x):
+        # down
+        out1 = self.dn_blk1(x)
+        x = F.relu(F.max_pool2d(out1, (2, 2)))
+
+        # bottom
+        x = self.bottom(x)
+
+        # up
+        x = self.up_blk1(self.upconv1(x, out1))
+
+        x = self.outconv(F.relu(x))
+
+        return x
+
+
+class Unet2(nn.Module):
+    """
+    Unet CNN for Ultrasound Nerve Segmentation challenge
+    Depth 2.
+        n_filters: (int) initial number of filters
+        bn: (bool) if use of batch normalization
+    """
+    def __init__(self, n_filters, bn=False):
+        super().__init__()
+
+        # down
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=1, bn=bn)
+        self.dn_blk2 = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
+
+        # bottom
+        self.bottom = ConvBlock(2*n_filters, 4*n_filters, pad=1, bn=bn)
+
+        # up
+        self.upconv1 = UpPool(4*n_filters)
+        self.up_blk1 = ConvBlock(4*n_filters, 2*n_filters, pad=1, bn=bn)
+        self.upconv2 = UpPool(2*n_filters)
+        self.up_blk2 = ConvBlock(2*n_filters, n_filters, pad=1, bn=bn)
+        
+
+        # output
+        self.outconv = nn.Conv2d(n_filters, 2, (1, 1), bias=True)
+    
+    def forward(self, x):
+        # down
+        out1 = self.dn_blk1(x)
+        x = F.relu(F.max_pool2d(out1, (2, 2)))
+        out2 = self.dn_blk2(x)
+        x = F.relu(F.max_pool2d(out2, (2, 2)))
+
+        # bottom
+        x = self.bottom(x)
+
+        # up
+        x = self.up_blk1(self.upconv1(x, out2))
+        x = self.up_blk2(self.upconv2(x, out1))
+
+        x = self.outconv(F.relu(x))
+
+        return x
+
+
+class Unet5(nn.Module):
+    """
+    Unet CNN for Ultrasound Nerve Segmentation challenge
+    Depth 5.
+        n_filters: (int) initial number of filters
+        bn: (bool) if use of batch normalization
+    """
+    def __init__(self, n_filters, bn=False):
+        super().__init__()
+
+        # down
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=1, bn=bn)
+        self.dn_blk2 = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
+        self.dn_blk3 = ConvBlock(2*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.dn_blk4 = ConvBlock(4*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.dn_blk5 = ConvBlock(8*n_filters, 16*n_filters, pad=1, bn=bn)
+
+        # bottom
+        self.bottom = ConvBlock(16*n_filters, 32*n_filters, pad=1, bn=bn)
+
+        # up
+        self.upconv1 = UpPool(32*n_filters)
+        self.up_blk1 = ConvBlock(32*n_filters, 16*n_filters, pad=1, bn=bn)
+        self.upconv2 = UpPool(16*n_filters)
+        self.up_blk2 = ConvBlock(16*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.upconv3 = UpPool(8*n_filters)
+        self.up_blk3 = ConvBlock(8*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.upconv4 = UpPool(4*n_filters)
+        self.up_blk4 = ConvBlock(4*n_filters, 2*n_filters, pad=1, bn=bn)
+        self.upconv5 = UpPool(2*n_filters)
+        self.up_blk5 = ConvBlock(2*n_filters, n_filters, pad=1, bn=bn)
+        
+        # output
+        self.outconv = nn.Conv2d(n_filters, 2, (1, 1), bias=True)
+    
+    def forward(self, x):
+        # down
+        out1 = self.dn_blk1(x)
+        x = F.relu(F.max_pool2d(out1, (2, 2)))
+        out2 = self.dn_blk2(x)
+        x = F.relu(F.max_pool2d(out2, (2, 2)))
+        out3 = self.dn_blk3(x)
+        x = F.relu(F.max_pool2d(out3, (2, 2)))
+        out4 = self.dn_blk4(x)
+        x = F.relu(F.max_pool2d(out4, (2, 2)))
+        out5 = self.dn_blk5(x)
+        x = F.relu(F.max_pool2d(out5, (2, 2)))
+
+        # bottom
+        x = self.bottom(x)
+
+        # up
+        x = self.up_blk1(self.upconv1(x, out5))
+        x = self.up_blk2(self.upconv2(x, out4))
+        x = self.up_blk3(self.upconv3(x, out3))
+        x = self.up_blk4(self.upconv4(x, out2))
+        x = self.up_blk5(self.upconv5(x, out1))
+
+        x = self.outconv(F.relu(x))
+
+        return x
+
+
+class Unet6(nn.Module):
+    """
+    Unet CNN for Ultrasound Nerve Segmentation challenge
+    Depth 6.
+        n_filters: (int) initial number of filters
+        bn: (bool) if use of batch normalization
+    """
+    def __init__(self, n_filters, bn=False):
+        super().__init__()
+
+        # down
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=1, bn=bn)
+        self.dn_blk2 = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
+        self.dn_blk3 = ConvBlock(2*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.dn_blk4 = ConvBlock(4*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.dn_blk5 = ConvBlock(8*n_filters, 16*n_filters, pad=1, bn=bn)
+        self.dn_blk6 = ConvBlock(16*n_filters, 32*n_filters, pad=1, bn=bn)
+
+        # bottom
+        self.bottom = ConvBlock(32*n_filters, 64*n_filters, pad=1, bn=bn)
+
+        # up
+        self.upconv1 = UpPool(64*n_filters)
+        self.up_blk1 = ConvBlock(64*n_filters, 32*n_filters, pad=1, bn=bn)
+        self.upconv2 = UpPool(32*n_filters)
+        self.up_blk2 = ConvBlock(32*n_filters, 16*n_filters, pad=1, bn=bn)
+        self.upconv3 = UpPool(16*n_filters)
+        self.up_blk3 = ConvBlock(16*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.upconv4 = UpPool(8*n_filters)
+        self.up_blk4 = ConvBlock(8*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.upconv5 = UpPool(4*n_filters)
+        self.up_blk5 = ConvBlock(4*n_filters, 2*n_filters, pad=1, bn=bn)
+        self.upconv6 = UpPool(2*n_filters)
+        self.up_blk6 = ConvBlock(2*n_filters, n_filters, pad=1, bn=bn)
+
+        # output
+        self.outconv = nn.Conv2d(n_filters, 2, (1, 1), bias=True)
+
+    def forward(self, x):
+        # down
+        out1 = self.dn_blk1(x)
+        x = F.relu(F.max_pool2d(out1, (2, 2)))
+        out2 = self.dn_blk2(x)
+        x = F.relu(F.max_pool2d(out2, (2, 2)))
+        out3 = self.dn_blk3(x)
+        x = F.relu(F.max_pool2d(out3, (2, 2)))
+        out4 = self.dn_blk4(x)
+        x = F.relu(F.max_pool2d(out4, (2, 2)))
+        out5 = self.dn_blk5(x)
+        x = F.relu(F.max_pool2d(out5, (2, 2)))
+        out6 = self.dn_blk6(x)
+        x = F.relu(F.max_pool2d(out6, (2, 2)))
+
+        # bottom
+        x = self.bottom(x)
+
+        # up
+        x = self.up_blk1(self.upconv1(x, out6))
+        x = self.up_blk2(self.upconv2(x, out5))
+        x = self.up_blk3(self.upconv3(x, out4))
+        x = self.up_blk4(self.upconv4(x, out3))
+        x = self.up_blk5(self.upconv5(x, out2))
+        x = self.up_blk6(self.upconv6(x, out1))
+
+        x = self.outconv(F.relu(x))
+
+        return x
+
+
+class Unet7(nn.Module):
+    """
+    Unet CNN for Ultrasound Nerve Segmentation challenge
+    Depth 7.
+        n_filters: (int) initial number of filters
+        bn: (bool) if use of batch normalization
+    """
+    def __init__(self, n_filters, bn=False):
+        super().__init__()
+
+        # down
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=1, bn=bn)
+        self.dn_blk2 = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
+        self.dn_blk3 = ConvBlock(2*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.dn_blk4 = ConvBlock(4*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.dn_blk5 = ConvBlock(8*n_filters, 16*n_filters, pad=1, bn=bn)
+        self.dn_blk6 = ConvBlock(16*n_filters, 32*n_filters, pad=1, bn=bn)
+        self.dn_blk7 = ConvBlock(32*n_filters, 64*n_filters, pad=1, bn=bn)
+
+        # bottom
+        self.bottom = ConvBlock(64*n_filters, 128*n_filters, pad=1, bn=bn)
+
+        # up
+        self.upconv1 = UpPool(128*n_filters)
+        self.up_blk1 = ConvBlock(128*n_filters, 64*n_filters, pad=1, bn=bn)
+        self.upconv2 = UpPool(64*n_filters)
+        self.up_blk2 = ConvBlock(64*n_filters, 32*n_filters, pad=1, bn=bn)
+        self.upconv3 = UpPool(32*n_filters)
+        self.up_blk3 = ConvBlock(32*n_filters, 16*n_filters, pad=1, bn=bn)
+        self.upconv4 = UpPool(16*n_filters)
+        self.up_blk4 = ConvBlock(16*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.upconv5 = UpPool(8*n_filters)
+        self.up_blk5 = ConvBlock(8*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.upconv6 = UpPool(4*n_filters)
+        self.up_blk6 = ConvBlock(4*n_filters, 2*n_filters, pad=1, bn=bn)
+        self.upconv7 = UpPool(2*n_filters)
+        self.up_blk7 = ConvBlock(2*n_filters, n_filters, pad=1, bn=bn)
+
+        # output
+        self.outconv = nn.Conv2d(n_filters, 2, (1, 1), bias=True)
+
+    def forward(self, x):
+        # down
+        out1 = self.dn_blk1(x)
+        x = F.relu(F.max_pool2d(out1, (2, 2)))
+        out2 = self.dn_blk2(x)
+        x = F.relu(F.max_pool2d(out2, (2, 2)))
+        out3 = self.dn_blk3(x)
+        x = F.relu(F.max_pool2d(out3, (2, 2)))
+        out4 = self.dn_blk4(x)
+        x = F.relu(F.max_pool2d(out4, (2, 2)))
+        out5 = self.dn_blk5(x)
+        x = F.relu(F.max_pool2d(out5, (2, 2)))
+        out6 = self.dn_blk6(x)
+        x = F.relu(F.max_pool2d(out6, (2, 2)))
+        out7 = self.dn_blk7(x)
+        x = F.relu(F.max_pool2d(out7, (2, 2)))
+
+        # bottom
+        x = self.bottom(x)
+
+        # up
+        x = self.up_blk1(self.upconv1(x, out7))
+        x = self.up_blk2(self.upconv2(x, out6))
+        x = self.up_blk3(self.upconv3(x, out5))
+        x = self.up_blk4(self.upconv4(x, out4))
+        x = self.up_blk5(self.upconv5(x, out3))
+        x = self.up_blk6(self.upconv6(x, out2))
+        x = self.up_blk7(self.upconv7(x, out1))
+
+        x = self.outconv(F.relu(x))
+
+        return x
+
+
+class Unet8(nn.Module):
+    """
+    Unet CNN for Ultrasound Nerve Segmentation challenge
+    Depth 8. Max depth for 256x256 input image
+        n_filters: (int) initial number of filters
+        bn: (bool) if use of batch normalization
+    """
+    def __init__(self, n_filters, bn=False):
+        super().__init__()
+
+        # down
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=1, bn=bn)
+        self.dn_blk2 = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
+        self.dn_blk3 = ConvBlock(2*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.dn_blk4 = ConvBlock(4*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.dn_blk5 = ConvBlock(8*n_filters, 16*n_filters, pad=1, bn=bn)
+        self.dn_blk6 = ConvBlock(16*n_filters, 32*n_filters, pad=1, bn=bn)
+        self.dn_blk7 = ConvBlock(32*n_filters, 64*n_filters, pad=1, bn=bn)
+        self.dn_blk8 = ConvBlock(64*n_filters, 128*n_filters, pad=1, bn=bn)
+
+        # bottom
+        self.bottom = ConvBlock(128*n_filters, 256*n_filters, pad=1, bn=bn)
+
+        # up
+        self.upconv1 = UpPool(256*n_filters)
+        self.up_blk1 = ConvBlock(256*n_filters, 128*n_filters, pad=1, bn=bn)
+        self.upconv2 = UpPool(128*n_filters)
+        self.up_blk2 = ConvBlock(128*n_filters, 64*n_filters, pad=1, bn=bn)
+        self.upconv3 = UpPool(64*n_filters)
+        self.up_blk3 = ConvBlock(64*n_filters, 32*n_filters, pad=1, bn=bn)
+        self.upconv4 = UpPool(32*n_filters)
+        self.up_blk4 = ConvBlock(32*n_filters, 16*n_filters, pad=1, bn=bn)
+        self.upconv5 = UpPool(16*n_filters)
+        self.up_blk5 = ConvBlock(16*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.upconv6 = UpPool(8*n_filters)
+        self.up_blk6 = ConvBlock(8*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.upconv7 = UpPool(4*n_filters)
+        self.up_blk7 = ConvBlock(4*n_filters, 2*n_filters, pad=1, bn=bn)
+        self.upconv8 = UpPool(2*n_filters)
+        self.up_blk8 = ConvBlock(2*n_filters, n_filters, pad=1, bn=bn)
+
+
+        # output
+        self.outconv = nn.Conv2d(n_filters, 2, (1, 1), bias=True)
+
+    def forward(self, x):
+        # down
+        out1 = self.dn_blk1(x)
+        x = F.relu(F.max_pool2d(out1, (2, 2)))
+        out2 = self.dn_blk2(x)
+        x = F.relu(F.max_pool2d(out2, (2, 2)))
+        out3 = self.dn_blk3(x)
+        x = F.relu(F.max_pool2d(out3, (2, 2)))
+        out4 = self.dn_blk4(x)
+        x = F.relu(F.max_pool2d(out4, (2, 2)))
+        out5 = self.dn_blk5(x)
+        x = F.relu(F.max_pool2d(out5, (2, 2)))
+        out6 = self.dn_blk6(x)
+        x = F.relu(F.max_pool2d(out6, (2, 2)))
+        out7 = self.dn_blk7(x)
+        x = F.relu(F.max_pool2d(out7, (2, 2)))
+        out8 = self.dn_blk8(x)
+        x = F.relu(F.max_pool2d(out8, (2, 2)))
+
+        # bottom
+        x = self.bottom(x)
+
+        # up
+        x = self.up_blk1(self.upconv1(x, out8))
+        x = self.up_blk2(self.upconv2(x, out7))
+        x = self.up_blk3(self.upconv3(x, out6))
+        x = self.up_blk4(self.upconv4(x, out5))
+        x = self.up_blk5(self.upconv5(x, out4))
+        x = self.up_blk6(self.upconv6(x, out3))
+        x = self.up_blk7(self.upconv7(x, out2))
+        x = self.up_blk8(self.upconv8(x, out1))
+
+        x = self.outconv(F.relu(x))
+
+        return x
+
+
+"""
+Models for binary classification (is any nerve present on image)
+"""
 
 class BinNet1_left(nn.Module):
     """
@@ -172,3 +536,47 @@ class BinNet1_left(nn.Module):
         x = self.fc(x.flatten(start_dim=1))
 
         return x
+
+
+class Unet5Part(nn.Module):
+    """Left part of Unet5 generating features to be used in nerve existence
+    clasifier
+    """
+    def __init__(self, n_filters, bn=False):
+        super().__init__()
+
+        # down
+        self.dn_blk1 = ConvBlock(1, n_filters, pad=1, bn=bn)
+        self.dn_blk2 = ConvBlock(n_filters, 2*n_filters, pad=1, bn=bn)
+        self.dn_blk3 = ConvBlock(2*n_filters, 4*n_filters, pad=1, bn=bn)
+        self.dn_blk4 = ConvBlock(4*n_filters, 8*n_filters, pad=1, bn=bn)
+        self.dn_blk5 = ConvBlock(8*n_filters, 16*n_filters, pad=1, bn=bn)
+
+    def forward(self, x):
+        # down
+        out1 = self.dn_blk1(x)
+        x = F.relu(F.max_pool2d(out1, (2, 2)))
+        out2 = self.dn_blk2(x)
+        x = F.relu(F.max_pool2d(out2, (2, 2)))
+        out3 = self.dn_blk3(x)
+        x = F.relu(F.max_pool2d(out3, (2, 2)))
+        out4 = self.dn_blk4(x)
+        x = F.relu(F.max_pool2d(out4, (2, 2)))
+        out5 = self.dn_blk5(x)
+        x = F.max_pool2d(out5, (2, 2))
+
+        return x
+
+
+class BinClf(nn.Module):
+    """Binary classifier for bottom part of model output
+    """
+    def __init__(self, n_features):
+        super().__init__()
+        self.fc = nn.Linear(n_features, 1)
+
+    def forward(self, features):
+        features = features.flatten(start_dim=1)
+        out = self.fc(features)
+
+        return out
