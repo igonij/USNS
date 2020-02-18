@@ -233,7 +233,7 @@ class USNSDetector:
                 running_loss += batch_size * loss.item()
                 num_images += batch_size
 
-                if num_images % print_every < batch_size:
+                if print_every and num_images % print_every < batch_size:
                     self.n_samples.append(num_images)
                     self.loss_history.append(running_loss / (num_images - num_images_previous))
                     running_loss = 0
@@ -250,8 +250,11 @@ class USNSDetector:
                         self.best_model_wts = copy.deepcopy(self.model.state_dict())
 
             print(f'After {ee+1} epochs: loss = {running_loss / max(num_images, 1e-6)}')
-            self.validate(dataloader_val, printing=True, show=True)
+            vloss, dscore = self.validate(dataloader_val, printing=True, show=True)
             print()
+            if dscore > self.best_model_dice:
+                self.best_model_dice = dscore
+                self.best_model_wts = copy.deepcopy(self.model.state_dict())
         print(f'Best model dice: {self.best_model_dice}')
 
     def dice(self, pred, target):
