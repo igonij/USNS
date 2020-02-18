@@ -288,6 +288,7 @@ class USNSDetector:
         n_processed = 0
         loss = 0
         dice = 0
+        exist_accuracy = 0
         with torch.no_grad():
             for x, y in dataloader:
                 x = x.to(self.device)
@@ -302,13 +303,21 @@ class USNSDetector:
                 # pred = F.pad(pred, (2, 2, 2, 2))
                 dice += torch.sum(self.dice(pred, y))
 
+                exist_pred = pred.flatten(start_dim=1).max(dim=1)[0]
+                exist_targ = y.flatten(start_dim=1).max(dim=1)[0].float()
+                exist_tp = exist_pred * exist_targ
+                exist_tn = (1 - exist_pred) * (1 - exist_targ)
+                exist_accuracy += torch.sum(exist_tp + exist_tn)
+
                 n_processed += batch_size
             loss = loss / n_processed
             dice = dice / n_processed
+            exist_accuracy = exist_accuracy / n_processed
 
             if printing:
                 print(f'Validation loss = {loss}')
                 print(f'Val Dice score = {dice}')
+                print(f'If exists accuracy = {exist_accuracy}')
 
             if show:
                 show_composed_imgs(
