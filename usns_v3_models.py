@@ -516,6 +516,56 @@ class Unet8(nn.Module):
         return x
 
 
+class UnetD(nn.Module):
+    """Unet with custom depth D
+    """
+    def __init__(self, depth, n_filters, bn=False):
+        super().__init__()
+        self.depth = depth
+
+        # down
+        self.dn_blks = nn.ModuleList()
+        in_ch = 1
+        out_ch = n_filters
+        for dd in range(self.depth):
+            self.dn_blks.append(ConvBlock(in_ch, out_ch, pad=1, bn=bn))
+            in_ch = out_ch
+            out_ch *= 2
+
+        # bottom
+        self.bottom = ConvBlock(in_ch, out_ch, pad=1, bn=bn)
+        in_ch, out_ch = out_ch, in_ch
+
+        # up
+        self.upconvs = nn.ModuleList()
+        self.up_blks = nn.ModuleList()
+        for dd in range(self.depth):
+            self.upconvs.append(UpPool(in_ch))
+            self.up_blks.append(ConvBlock(in_ch, out_ch, pad=1, bn=bn))
+            in_ch = out_ch
+            out_ch = out_ch // 2
+
+        # output
+        self.outconv = nn.Conv2d(n_filters, 2, (1, 1), bias=True)
+
+    def forward(self, x):
+        outs = []
+        for dn_blk in self.dn_blks:
+            x = dn_blk(x)
+            outs.append(x)
+            x = F.relu(F.max_pool2d(x, (2, 2)))
+
+        x = self.bottom(x)
+        outs.reverse()
+
+        for upconv, up_blk, out in zip(self.upconvs, self.up_blks, outs):
+            x = up_blk(upconv(x, out))
+
+        x = self.outconv(F.relu(x))
+
+        return x
+
+
 """
 Models for binary classification (is any nerve present on image)
 """
@@ -568,15 +618,44 @@ class Unet5Part(nn.Module):
         return x
 
 
+class UnetDPart(nn.Module):
+    """Left part of UnetD generating features to be used in nerve existence
+    clasifier
+    """
+    def __init__(self, depth, n_filters, bn=False):
+        super().__init__()
+        self.depth = depth
+
+        # down
+        self.dn_blks = nn.ModuleList()
+        in_ch = 1
+        out_ch = n_filters
+        for dd in range(self.depth):
+            self.dn_blks.append(ConvBlock(in_ch, out_ch, pad=1, bn=bn))
+            in_ch = out_ch
+            out_ch *= 2
+
+    def forward(self, x):
+        for dn_blk in self.dn_blks[:-1]:
+            x = dn_blk(x)
+            x = F.relu(F.max_pool2d(x, (2, 2)))
+        x = self.dn_blks[-1](x)
+        x = F.max_pool2d(x, (2, 2))
+
+        return x
+
+
 class BinClf(nn.Module):
     """Binary classifier for bottom part of model output
     """
-    def __init__(self, n_features):
+    def __init__(self, n_filters):
         super().__init__()
-        self.fc = nn.Linear(n_features, 1)
+        self.conv8x8 = nn.Conv2d(16*n_filters, n_filters, (8, 8))
+        self.fc = nn.Linear(n_filters, 1)
 
     def forward(self, features):
-        features = features.flatten(start_dim=1)
-        out = self.fc(features)
+        out = F.relu(self.conv8x8(features))
+        out = out.flatten(start_dim=1)
+        out = self.fc(out)
 
         return out

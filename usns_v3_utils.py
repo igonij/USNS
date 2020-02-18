@@ -95,7 +95,8 @@ class USNSDataset(Dataset):
                  datadir,
                  img_list=None,
                  train=True,
-                 transform=T.ToTensor()):
+                 transform=T.ToTensor(),
+                 quiet=False):
         """
         Dataset class for loading images and masks.
         Data as in https://www.kaggle.com/c/ultrasound-nerve-segmentation/data
@@ -119,6 +120,18 @@ class USNSDataset(Dataset):
         self.imglist.sort(
             key=lambda fname: tuple(map(int, fname.split('.')[0].split('_')))
         )
+
+        if self.train and not quiet:
+            num_nerves = 0
+            for img_fname in self.imglist:
+                mask_fname = img_fname.replace('.tif', '_mask.tif')
+                mask = Image.open(os.path.join(self.datadir, mask_fname))
+                if mask.getbbox():
+                    num_nerves += 1
+                mask.close()
+            empty_portion = 1 - num_nerves / len(self.imglist)
+            print(f"The set contains {len(self.imglist)} images. Portion of empty masks: {empty_portion}")
+
 
     def __len__(self):
         return len(self.imglist)
@@ -161,6 +174,7 @@ class USNSDetector:
         self.model = model.to(self.device)
 
         self.eps_dice = eps_dice
+        self.loss = cross_entropy_loss
 
         self.n_samples = []
         self.loss_history = []
@@ -170,7 +184,8 @@ class USNSDetector:
         self.best_model_wts = copy.deepcopy(self.model.state_dict())
         self.best_model_dice = 0.0
 
-    def fit(self, dataloader, dataloader_val, epochs=1, print_every=1000, lr=0.001):
+    def fit(self, dataloader, dataloader_val,
+            epochs=1, print_every=1000, lr=0.001, loss_type='cross_entropy'):
         """
         Train model.
         Args:
@@ -180,6 +195,7 @@ class USNSDetector:
             dataloader_val: pytorch compatible DataLoader for validation
             epochs: number of epochs to train
             print_every: num of samples to be processed to check val score
+            loss_type: string, type of loss function from self.losses
             params: dict with training hyperparameters
         """
         optimizer = optim.Adam(self.model.parameters(), lr=lr)
@@ -188,6 +204,12 @@ class USNSDetector:
         self.loss_history = []
         self.val_loss_history = []
         self.dice_history = []
+
+        if loss_type == 'cross_entropy':
+            self.loss = cross_entropy_loss
+        elif loss_type == 'dice':
+            self.loss = lambda s, t: dice_loss(s, t, self.eps_dice)
+        print(f"Optimization with {loss_type} loss function")
 
         running_loss = 0
         num_images = 0
@@ -232,20 +254,6 @@ class USNSDetector:
             print()
         print(f'Best model dice: {self.best_model_dice}')
 
-    def loss(self, scores, target):
-        """
-        Loss function used for base model trainig
-        args:
-            scores: model output scores
-            target: ground truth lables
-        returns:
-            scalar loss for input minibatch
-        """
-        #scores = F.pad(scores, (2, 2, 2, 2))
-        loss = F.cross_entropy(scores, target)
-
-        return loss
-
     def dice(self, pred, target):
         """
         Dice coef as scored in competition. Accepts predictions (0 or 1 for
@@ -260,27 +268,6 @@ class USNSDetector:
             (torch.sum(pred + target, (-2, -1)) + both_empty).float()
 
         return D
-
-    def dice_loss(self, scores, target):
-        """
-        Dice loss finction. Should be minimized! Accepts raw scores without
-        softmax or sigmoid.
-        args:
-            scores: model output scores
-            target:
-        """
-        scores = scores.flatten(start_dim=2)
-        scores = F.softmax(scores, dim=1)
-        target = scores.flatten(start_dim=1)
-
-        Dpos = (torch.sum(scores[:, 1, :] * target, dim=-1) + self.eps_dice) / \
-            (torch.sum(scores[:, 1, :] + target, dim=-1) + self.eps_dice)
-        Dneg = (torch.sum(scores[:, 0, :] * (1 - target), dim=-1) + self.eps_dice) / \
-            (torch.sum(scores[:, 0, :] + 1 - target, dim=-1) + self.eps_dice)
-
-        loss = 1 - Dpos - Dneg
-
-        return loss.mean()
 
     def validate(self, dataloader, printing=False, show=False):
         """
@@ -321,9 +308,11 @@ class USNSDetector:
                 print(f'Val Dice score = {dice}')
 
             if show:
-                show_imgs(x.cpu(),
-                          y.cpu().unsqueeze(1),
-                          pred.float().cpu().unsqueeze(1))
+                show_composed_imgs(
+                    x.cpu(),
+                    y.cpu().unsqueeze(1),
+                    pred.float().cpu().unsqueeze(1)
+                )
 
         return loss, dice
 
@@ -381,6 +370,40 @@ def resize_tensor(tensor, size):
 
     return res
 
+def cross_entropy_loss(scores, target):
+    """
+    Loss function used for base model trainig
+    args:
+        scores: model output scores
+        target: ground truth lables
+    returns:
+        scalar loss for input minibatch
+    """
+    #scores = F.pad(scores, (2, 2, 2, 2))
+    loss = F.cross_entropy(scores, target)
+
+    return loss
+
+def dice_loss(scores, target, eps=1e-6):
+    """
+    Dice loss function. Should be minimized! Accepts raw scores without
+    softmax or sigmoid.
+    args:
+        scores: model output scores
+        target:
+    """
+    scores = scores.flatten(start_dim=2)
+    scores = F.softmax(scores, dim=1)
+    target = target.flatten(start_dim=1)
+
+    Dpos = (torch.sum(scores[:, 1, :] * target, dim=-1) + eps) / \
+        (0.5*torch.sum(scores[:, 1, :] + target, dim=-1) + eps)
+    Dneg = (torch.sum(scores[:, 0, :] * (1 - target), dim=-1) + eps) / \
+        (0.5*torch.sum(scores[:, 0, :] + 1 - target, dim=-1) + eps)
+
+    loss = 1 - 0.5*(Dpos + Dneg)
+
+    return loss.mean()
 
 def compose_visualization(snapshots, targets, predictions, alpha=0.7,
                           transform=Normalize((0.38983212684516944,), (0.21706658034222048,))):
@@ -390,7 +413,7 @@ def compose_visualization(snapshots, targets, predictions, alpha=0.7,
         targets: tensor with relevant targets
         predictions: tensor with predictions
     """
-    batch_size, _, height, width = snapshots.shape
+    batch_size = snapshots.shape[0]
     imglist = []
     for n in range(batch_size):
         snap = transform.inverse(snapshots[n].cpu())
@@ -406,6 +429,29 @@ def compose_visualization(snapshots, targets, predictions, alpha=0.7,
         imglist.append(composed)
 
     return imglist
+
+def show_composed_imgs(snap, targ, pred):
+    """Show predictions and targets above input image using composition
+    by compose_visualization function
+        input: model input image
+        targ: ground truth segmentation
+        pred: prediction segmentation
+    """
+    cols = 4
+
+    imglist = compose_visualization(snap, targ, pred)
+    batch_size = len(imglist)
+    rows = np.int(np.ceil(batch_size / cols))
+
+    _, axarr = plt.subplots(rows, cols, figsize=(4*cols, 4 * rows), squeeze=False)
+    with torch.no_grad():
+        for ii, img in enumerate(imglist):
+            row = ii // cols
+            col = ii % cols
+            axarr[row, col].axis('off')
+            axarr[row, col].imshow(img)
+        plt.show()
+
 
 def show_imgs(*imgs):
     """Show images from list of tensors. Grid of the size
