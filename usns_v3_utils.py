@@ -18,6 +18,7 @@ from torchvision import transforms as T
 import torchvision.transforms.functional as TF
 
 import numpy as np
+import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from PIL import Image
@@ -249,8 +250,17 @@ class USNSDetector:
                         self.best_model_dice = dscore
                         self.best_model_wts = copy.deepcopy(self.model.state_dict())
 
-            print(f'After {ee+1} epochs: loss = {running_loss / max(num_images, 1e-6)}')
+            self.n_samples.append(num_images)
+            if num_images - num_images_previous:
+                self.loss_history.append(running_loss / (num_images - num_images_previous))
+            else:
+                self.loss_history.append(self.loss_history[-1])
+            running_loss = 0
+            num_images_previous = num_images
+            print(f'After {ee+1} epochs: loss = {self.loss_history[-1]}')
             vloss, dscore = self.validate(dataloader_val, printing=True, show=True)
+            self.val_loss_history.append(vloss)
+            self.dice_history.append(dscore)
             print()
             if dscore > self.best_model_dice:
                 self.best_model_dice = dscore
@@ -496,6 +506,18 @@ def rle_encoding(x):
         prev = b
     return run_lengths
 
+def rle_decoding(run_lengths, size=(420, 580)):
+    """Decode run_length encoded by rle_encoding()
+        run_lengths: (list) run-length encoded mask
+        size: (tuple) image size (H, W). As in competition by default
+    Returns:
+        dots: (numpy array) decoded 2D mask
+    """
+    dots = np.zeros(np.prod(size))
+    for start, length in zip(run_lengths[::2], run_lengths[1::2]):
+        dots[start:start+length] = 1
+    dots = dots.reshape(size[1], size[0]).T
+    return dots
 
 def train_val_split(datadir, **options):
     """

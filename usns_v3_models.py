@@ -48,6 +48,14 @@ class UpPool(nn.Module):
         return out
 
 
+class Swish(nn.Module):
+    """Swish activation function by Google
+    $Swish = x * \sigma(x)$
+    """
+    def forward(self, x):
+        return x * F.sigmoid(x)
+
+
 class Unet(nn.Module):
     def __init__(self, n_filters=64, bn=False):
         """
