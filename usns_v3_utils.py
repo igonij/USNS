@@ -18,8 +18,8 @@ from torchvision import transforms as T
 import torchvision.transforms.functional as TF
 
 import numpy as np
-import pandas as pd
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score
 
 from PIL import Image
 
@@ -159,14 +159,14 @@ class USNSDataset(Dataset):
 ## Trainer-container :)
 
 class USNSDetector:
-    def __init__(self, model, device=None, eps_dice=1e-6):
-        """
+    """
         Ultrasound Nerve Segmentation detector class. Contains training and
         prediction procedures.
         Args:
             model: (nn.Module) model to use or train
             device: (torch.devive) device to use for major computations
         """
+    def __init__(self, model, device=None, eps_dice=1e-6):
         if device:
             self.device = device
         else:
@@ -181,8 +181,12 @@ class USNSDetector:
         self.loss_history = []
         self.val_loss_history = []
         self.dice_history = []
+        self.rocauc_clf_max = []
+        self.rocauc_clf_sum = []
 
         self.best_model_wts = copy.deepcopy(self.model.state_dict())
+        self.best_binclf_wts = copy.deepcopy(self.model.state_dict())
+        self.best_binclf_score = 0.0
         self.best_model_dice = 0.0
 
     def fit(self, dataloader, dataloader_val,
@@ -205,6 +209,8 @@ class USNSDetector:
         self.loss_history = []
         self.val_loss_history = []
         self.dice_history = []
+        self.rocauc_clf_max = []
+        self.rocauc_clf_sum = []
 
         if loss_type == 'cross_entropy':
             self.loss = cross_entropy_loss
@@ -299,6 +305,10 @@ class USNSDetector:
         loss = 0
         dice = 0
         exist_accuracy = 0
+        n_samples = len(dataloader.dataset)
+        clf_targets = np.zeros(n_samples, dtype=int)
+        clf_max_scores = np.zeros(n_samples)
+        clf_sum_scores = np.zeros(n_samples)
         with torch.no_grad():
             for x, y in dataloader:
                 x = x.to(self.device)
@@ -319,15 +329,35 @@ class USNSDetector:
                 exist_tn = (1 - exist_pred) * (1 - exist_targ)
                 exist_accuracy += torch.sum(exist_tp + exist_tn)
 
+                # model output based existance classifier
+                clf_max, clf_sum = bin_clf(scores)
+                clf_targets[n_processed:n_processed + batch_size] = exist_targ.squeeze().cpu().numpy()
+                clf_max_scores[n_processed:n_processed + batch_size] = clf_max.squeeze().cpu().numpy()
+                clf_sum_scores[n_processed:n_processed + batch_size] = clf_sum.squeeze().cpu().numpy()
+
                 n_processed += batch_size
             loss = loss / n_processed
             dice = dice / n_processed
             exist_accuracy = exist_accuracy / n_processed
 
+            # model output based existance classifier
+            # calculate ROC AUC only if images with and without labeled nerve present
+            calc_rocauc = len(np.unique(clf_targets)) == 2
+            if calc_rocauc:
+                self.rocauc_clf_max.append(roc_auc_score(clf_targets, clf_max_scores))
+                self.rocauc_clf_sum.append(roc_auc_score(clf_targets, clf_sum_scores))
+
+            if exist_accuracy > self.best_binclf_score:
+                self.best_binclf_score = exist_accuracy
+                self.best_binclf_wts = copy.deepcopy(self.model.state_dict())
+
             if printing:
                 print(f'Validation loss = {loss}')
                 print(f'Val Dice score = {dice}')
                 print(f'If exists accuracy = {exist_accuracy}')
+                if calc_rocauc:
+                    print(f'ROC AUC for max classifier = {self.rocauc_clf_max[-1]}')
+                    print(f'ROC AUC for sum classifier = {self.rocauc_clf_sum[-1]}')
 
             if show:
                 show_composed_imgs(
@@ -553,3 +583,21 @@ def get_labeled(datadir):
             if np.array(mask).any():
                 labeled.append(imgname)
     return labeled
+
+
+def bin_clf(scores):
+    """Returns some binary classifier scores calculated from model scores
+    """
+    diff = scores[:, 1, :, :] - scores[:, 0, :, :]
+    diff = diff.flatten(start_dim=1)
+    pred = torch.argmax(scores, dim=1)
+    pred = pred.flatten(start_dim=1)
+
+    clf_max, _ = diff.max(dim=1)
+    clf_sum = diff.sum(dim=1)
+
+    # bad in negative prediction case
+    # clf_npos = pred.sum(dim=1)
+    # clf_sumpos = torch.sum(scores[:, 1, :, :].flatten(start_dim=1) * pred, dim=1)
+
+    return clf_max, clf_sum
