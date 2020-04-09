@@ -3,29 +3,43 @@ from torch import nn
 from torch.nn import functional as F
 
 
+def swish(x):
+    """Swish activation function by Google
+    $Swish = x * \sigma(x)$
+    """
+    return x * torch.sigmoid(x)
+
+activations = {
+            'relu': F.relu,
+            'swish': swish
+        }
+
+
 class ConvBlock(nn.Module):
-    def __init__(self, in_channel, out_channel, pad=0, bn=False):
+    def __init__(self, in_channel, out_channel, pad=0, bn=False, activation='relu'):
         """
-        Convolutional block of U-net architecture without activation (it is
-        optimal to make ReLU after max pool)
+        Convolutional block of U-net architecture without final activation
+        (it is optimal to make ReLU after max pool)
         """
         super().__init__()
         self.bn = bn
+        self.activation = activations[activation]
+
         self.conv1 = nn.Conv2d(in_channel, out_channel,
                                (3, 3), padding=pad, bias=True)
         self.conv2 = nn.Conv2d(out_channel, out_channel,
                                (3, 3), padding=pad, bias=True)
-        
+
         if self.bn:
             self.bn1 = nn.BatchNorm2d(out_channel)
             self.bn2 = nn.BatchNorm2d(out_channel)
-    
+
     def forward(self, x):
         x = self.conv1(x)
         if self.bn: x = self.bn1(x)
-        x = self.conv2(F.relu(x))
+        x = self.conv2(self.activation(x))
         if self.bn: x = self.bn2(x)
-        
+
         return x
 
 
@@ -53,8 +67,7 @@ class Swish(nn.Module):
     $Swish = x * \sigma(x)$
     """
     def forward(self, x):
-        return x * F.sigmoid(x)
-
+        return swish(x)
 
 class Unet(nn.Module):
     def __init__(self, n_filters=64, bn=False):
@@ -527,21 +540,23 @@ class Unet8(nn.Module):
 class UnetD(nn.Module):
     """Unet with custom depth D
     """
-    def __init__(self, depth, n_filters, bn=False):
+    def __init__(self, depth, n_filters, bn=False, activation='relu'):
         super().__init__()
         self.depth = depth
+
+        self.activation = activations[activation]
 
         # down
         self.dn_blks = nn.ModuleList()
         in_ch = 1
         out_ch = n_filters
         for dd in range(self.depth):
-            self.dn_blks.append(ConvBlock(in_ch, out_ch, pad=1, bn=bn))
+            self.dn_blks.append(ConvBlock(in_ch, out_ch, pad=1, bn=bn, activation=activation))
             in_ch = out_ch
             out_ch *= 2
 
         # bottom
-        self.bottom = ConvBlock(in_ch, out_ch, pad=1, bn=bn)
+        self.bottom = ConvBlock(in_ch, out_ch, pad=1, bn=bn, activation=activation)
         in_ch, out_ch = out_ch, in_ch
 
         # up
@@ -549,7 +564,7 @@ class UnetD(nn.Module):
         self.up_blks = nn.ModuleList()
         for dd in range(self.depth):
             self.upconvs.append(UpPool(in_ch))
-            self.up_blks.append(ConvBlock(in_ch, out_ch, pad=1, bn=bn))
+            self.up_blks.append(ConvBlock(in_ch, out_ch, pad=1, bn=bn, activation=activation))
             in_ch = out_ch
             out_ch = out_ch // 2
 
@@ -561,7 +576,7 @@ class UnetD(nn.Module):
         for dn_blk in self.dn_blks:
             x = dn_blk(x)
             outs.append(x)
-            x = F.relu(F.max_pool2d(x, (2, 2)))
+            x = self.activation(F.max_pool2d(x, (2, 2)))
 
         x = self.bottom(x)
         outs.reverse()
@@ -569,7 +584,7 @@ class UnetD(nn.Module):
         for upconv, up_blk, out in zip(self.upconvs, self.up_blks, outs):
             x = up_blk(upconv(x, out))
 
-        x = self.outconv(F.relu(x))
+        x = self.outconv(self.activation(x))
 
         return x
 

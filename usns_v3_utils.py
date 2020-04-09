@@ -347,9 +347,9 @@ class USNSDetector:
                 self.rocauc_clf_max.append(roc_auc_score(clf_targets, clf_max_scores))
                 self.rocauc_clf_sum.append(roc_auc_score(clf_targets, clf_sum_scores))
 
-            if exist_accuracy > self.best_binclf_score:
-                self.best_binclf_score = exist_accuracy
-                self.best_binclf_wts = copy.deepcopy(self.model.state_dict())
+                if max(self.rocauc_clf_max[-1], self.rocauc_clf_sum[-1]) > self.best_binclf_score:
+                    self.best_binclf_score = max(self.rocauc_clf_max[-1], self.rocauc_clf_sum[-1])
+                    self.best_binclf_wts = copy.deepcopy(self.model.state_dict())
 
             if printing:
                 print(f'Validation loss = {loss}')
