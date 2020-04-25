@@ -368,6 +368,23 @@ class USNSDetector:
 
         return loss, dice
 
+    def gen_bin_scores(self, dataloader):
+        """Generates binary classification scores for nerve presence for images in dataloader
+        """
+        res = []
+        with torch.no_grad():
+            for x, y in dataloader:
+                x = x.to(self.device)
+                scores = self.model(x)
+                clf_max, _ = bin_clf(scores)
+                clf_max = clf_max.sigmoid()
+                res.extend(clf_max.squeeze().cpu().numpy().tolist())
+
+        res = np.array(res)
+
+        return res
+
+
     def generate_submission(self, dataloader, filepath):
         """
         Generate submission csv file for samples from dataloader
